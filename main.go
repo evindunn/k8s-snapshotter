@@ -21,7 +21,7 @@ func main() {
 		"(optional) whether running within a kubernetes cluster",
 	)
 	// TODO: Make this required; Right now default is rook-ceph for local testing
-	cephClusterID := *flag.String(
+	cephClusterID := flag.String(
 		"cephClusterID",
 		"rook-ceph",
 		"(optional) the ID of the ceph cluster to back up",
@@ -76,8 +76,7 @@ func main() {
 					currentClusterID, hasClusterID := volAttrs["clusterID"]
 					cephPath, hasCephPath := volAttrs["subvolumePath"]
 
-					clusterIDMatches := hasClusterID && currentClusterID == cephClusterID
-
+					clusterIDMatches := hasClusterID && currentClusterID == *cephClusterID
 					if clusterIDMatches && hasCephPath {
 						pvMap[namespace] = append(
 							pvMap[namespace],
@@ -95,7 +94,7 @@ func main() {
 	for namespace, pvTuples := range pvMap {
 		fmt.Printf("=== %s ===\n", namespace)
 		for _, pvTuple := range pvTuples {
-			fmt.Printf("%s -> %s\n", pvTuple.pvcName, pvTuple.cephPath)
+			fmt.Printf("%s -> %s:%s\n", pvTuple.pvcName, *cephClusterID, pvTuple.cephPath)
 		}
 		fmt.Println()
 	}
