@@ -72,7 +72,7 @@ func main() {
 			}
 
 			snapShotPath := path.Join(subVolumePath, ".snap")
-			archiveName := fmt.Sprintf("%s-%s.tar", snapshotNamePrefix, subVolName)
+			archiveName := fmt.Sprintf("%s-%s.tar.gz", snapshotNamePrefix, subVolName)
 
 			log.Printf("Creating %s...\n", archiveName)
 			err = tarCephDirectory(archiveName, snapShotPath, mountInfo)

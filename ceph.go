@@ -3,6 +3,7 @@ package main
 import (
 	"archive/tar"
 	"bufio"
+	"compress/gzip"
 	"github.com/ceph/go-ceph/cephfs"
 	"github.com/ceph/go-ceph/rados"
 	"io"
@@ -52,7 +53,14 @@ func tarCephDirectory(tarFilePath string, directory string, mount *cephfs.MountI
 	if err != nil {
 		return err
 	}
-	tarWriter := tar.NewWriter(tarFile)
+	defer tarFile.Close()
+
+	gzipWriter := gzip.NewWriter(tarFile)
+	defer gzipWriter.Close()
+
+	tarWriter := tar.NewWriter(gzipWriter)
+	defer tarWriter.Close()
+
 	tarBuffer := bufio.NewWriter(tarWriter)
 
 	err = mount.ChangeDir(directory)
@@ -90,11 +98,6 @@ func tarCephDirectory(tarFilePath string, directory string, mount *cephfs.MountI
 		if err != nil {
 			return err
 		}
-	}
-
-	err = tarWriter.Close()
-	if err != nil {
-		return err
 	}
 
 	return nil

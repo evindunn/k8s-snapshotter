@@ -1,2 +1,4 @@
 .idea/
 ceph-snapshotter
+*.tar
+*.gz
