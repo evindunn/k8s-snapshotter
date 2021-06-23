@@ -3,92 +3,27 @@ package main
 import (
 	"archive/tar"
 	"bufio"
-	"flag"
-	"fmt"
 	"github.com/ceph/go-ceph/cephfs"
-	cephFsAdmin "github.com/ceph/go-ceph/cephfs/admin"
 	"github.com/ceph/go-ceph/rados"
 	"io"
-	"log"
 	"os"
 	"path"
 	"time"
 )
 
-func main() {
-	var clusterUser string
-	var volumeName string
-	var subVolumeGroup string
-
-	today := time.Now().Format("2006-01-02")
-	snapshotNamePrefix := fmt.Sprintf("%s_backup", today)
-
-	flag.StringVar(&clusterUser, "user", "", "The user whose keyring is used to connect to the cluster")
-	flag.StringVar(&volumeName, "volume", "", "The volume to poll for subVolumes")
-	flag.StringVar(&subVolumeGroup, "subVolumeGroup", "", "The subVolumeGroup to poll for subVolumes")
-	flag.Parse()
-
-	if clusterUser == "" || volumeName == "" || subVolumeGroup == "" {
-		flag.Usage()
-		os.Exit(1)
-	}
-
-	log.Printf("Connecting to ceph cluster with user '%s'...\n", clusterUser)
-	connection, err := createCephConnection(clusterUser)
-	catchError(err)
-	defer connection.Shutdown()
-
-	client := cephFsAdmin.NewFromConn(connection)
-	log.Printf("Connected to cluster as user '%s'\n", clusterUser)
-
-	log.Printf("Polling volume '%s' for subvolumes...\n", volumeName)
-	subVolumes, err := client.ListSubVolumes(volumeName, subVolumeGroup)
-	catchError(err)
-
-	log.Printf("Using snapshot name '%s'\n", snapshotNamePrefix)
-
-	for _, vol := range subVolumes {
-		err := client.CreateSubVolumeSnapshot(volumeName, subVolumeGroup, vol, snapshotNamePrefix)
-		catchError(err)
-	}
-	log.Printf("Snapshots created")
-
-	mountInfo, err := cephfs.CreateFromRados(connection)
-	catchError(err)
-	defer mountInfo.Release()
-
-	err = mountInfo.Mount()
-	catchError(err)
-	defer mountInfo.Unmount()
-
-	for _, subVolName := range subVolumes {
-		subVolumePath, err := client.SubVolumePath(volumeName, subVolumeGroup, subVolName)
-		catchError(err)
-
-		snapshots, err := client.ListSubVolumeSnapshots(volumeName, subVolumeGroup, subVolName)
-		catchError(err)
-
-		for _, snap := range snapshots {
-			// For testing, remove all old snapshots
-			if snap != snapshotNamePrefix {
-				err := client.RemoveSubVolumeSnapshot(volumeName, subVolumeGroup, subVolName, snap)
-				catchError(err)
-			}
-
-			snapShotPath := path.Join(subVolumePath, ".snap")
-			archiveName := fmt.Sprintf("%s-%s.tar", snapshotNamePrefix, subVolName)
-
-			log.Printf("Creating %s...\n", archiveName)
-			err = tarCephDirectory(archiveName, snapShotPath, mountInfo)
-			if err != nil {
-				catchError(err)
-			}
-		}
-	}
-
-	log.Println("Done")
+// CephFile - Struct representing a CephFS file that will eventually be tar'd
+type CephFile struct {
+	uid int
+	gid int
+	mode int64
+	accessed time.Time
+	modified time.Time
+	size int64
+	path string
 }
 
+// createCephConnection: Returns a new connection to a ceph cluster configured in /etc/ceph/ceph.conf.
+// The given user's keyring is used to connect
 func createCephConnection(clusterUser string) (*rados.Conn, error) {
 	connection, err := rados.NewConnWithUser(clusterUser)
 	if err != nil {
@@ -108,6 +43,8 @@ func createCephConnection(clusterUser string) (*rados.Conn, error) {
 	return connection, nil
 }
 
+// tarCephDirectory: Tars the the given directory on the given ceph mount and saves the
+// file at tarFilePath
 func tarCephDirectory(tarFilePath string, directory string, mount *cephfs.MountInfo) error {
 	var dirFiles []CephFile
 
@@ -163,6 +100,8 @@ func tarCephDirectory(tarFilePath string, directory string, mount *cephfs.MountI
 	return nil
 }
 
+// walkCephDirectory: Walks the given dirName on the given mount and recursively populates entries
+// with the list of CephFiles found
 func walkCephDirectory(entries *[]CephFile, mount *cephfs.MountInfo, dirName string) error {
 	directory, err := mount.OpenDir(dirName)
 	if err != nil {
@@ -222,6 +161,7 @@ func walkCephDirectory(entries *[]CephFile, mount *cephfs.MountInfo, dirName str
 	return nil
 }
 
+// readCephFile: Reads the given path into writer on the given mount
 func readCephFile(writer *bufio.Writer, mount *cephfs.MountInfo, path string) error {
 	// Third arg isn't used, it's only when a new file is created
 	file, err := mount.Open(path, os.O_RDONLY, 0644)
@@ -239,15 +179,4 @@ func readCephFile(writer *bufio.Writer, mount *cephfs.MountInfo, path string) er
 	}
 
 	return nil
-}
-
-// CephFile - Struct representing a CephFS file that will eventually be tar'd
-type CephFile struct {
-	uid int
-	gid int
-	mode int64
-	accessed time.Time
-	modified time.Time
-	size int64
-	path string
 }
