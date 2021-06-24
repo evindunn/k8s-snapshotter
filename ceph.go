@@ -4,6 +4,10 @@ import (
 	"archive/tar"
 	"bufio"
 	"compress/gzip"
+	"encoding/binary"
+	"encoding/hex"
+	"errors"
+	"fmt"
 	"github.com/ceph/go-ceph/cephfs"
 	"github.com/ceph/go-ceph/rados"
 	"io"
@@ -196,4 +200,73 @@ func readCephFile(writer *bufio.Writer, mount *cephfs.MountInfo, path string) er
 	}
 
 	return nil
+}
+
+// decomposeCSIID uses the scheme defined in https://github.com/ceph/ceph-csi/blob/v3.3.1/internal/util/volid.go
+// to parse a Ceph CSI Volume ID
+func decomposeCSIID(csiID string) (*CephFSCSIID, error) {
+	const VersionBytes = 4
+	const ClusterIdLenBytes = 4
+	const MaxClusterIDLen = 36
+	const PoolIdBytes = 16
+	const UuidSize = 36
+
+	var id CephFSCSIID
+	currentIdx := 0
+
+	encodingVersionStr, err := hex.DecodeString(csiID[currentIdx:VersionBytes])
+	if err != nil {
+		return nil, err
+	}
+	id.EncodingVersion = int(binary.BigEndian.Uint16(encodingVersionStr))
+
+	if id.EncodingVersion != 1 {
+		return nil, errors.New(fmt.Sprintf("unsupported Ceph Volume ID (version %d)", id.EncodingVersion))
+	}
+
+	// Skip 1 byte for the '-' separator
+	currentIdx += VersionBytes + 1
+
+	clusterIDLenStr, err := hex.DecodeString(csiID[currentIdx:currentIdx + ClusterIdLenBytes])
+	if err != nil {
+		return nil, err
+	}
+	clusterIDLen := int(binary.BigEndian.Uint16(clusterIDLenStr))
+
+	if clusterIDLen > MaxClusterIDLen {
+		return nil, errors.New("invalid ClusterID")
+	}
+
+	// Skip 1 byte for the '-' separator
+	currentIdx += ClusterIdLenBytes + 1
+
+	id.ClusterID = csiID[currentIdx:currentIdx + clusterIDLen]
+
+	// Skip 1 byte for the '-' separator
+	currentIdx += clusterIDLen + 1
+
+	poolIdStr, err := hex.DecodeString(csiID[currentIdx:currentIdx + PoolIdBytes])
+	if err != nil {
+		return nil, err
+	}
+
+	id.PoolID = int64(binary.BigEndian.Uint64(poolIdStr))
+
+	// Skip 1 byte for the '-' separator
+	currentIdx += PoolIdBytes + 1
+
+	id.ObjectID = csiID[currentIdx:]
+
+	if len(id.ObjectID) != UuidSize {
+		return nil, errors.New("invalid ObjectID")
+	}
+
+	return &id, nil
+}
+
+type CephFSCSIID struct {
+	EncodingVersion int
+	ClusterID string
+	PoolID int64
+	ObjectID string
 }

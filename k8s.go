@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	cephFsAdmin "github.com/ceph/go-ceph/cephfs/admin"
 	metaV1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -13,8 +16,13 @@ import (
 	"path/filepath"
 )
 
+// TODO: Pull fsName (volume name) from storageClass
+// TODO: Pull subVolumeGroup from ceph-csi-config configMap
+
 func main() {
 	var storageClassName string
+	var cephCSINamespace string
+	var cephCSIConfigMap string
 	var cephKeyringUser string
 	var isInCluster bool
 
@@ -38,6 +46,18 @@ func main() {
 		"inCluster",
 		false,
 		"(optional) whether running within a kubernetes cluster",
+	)
+	flag.StringVar(
+		&cephCSINamespace,
+		"cephCSINamespace",
+		"ceph",
+		"(optional) The namespace that contains the Ceph CSI ConfigMap",
+	)
+	flag.StringVar(
+		&cephCSIConfigMap,
+		"cephCSIConfigMap",
+		"ceph-csi-config",
+		"(optional) The name of the Ceph CSI ConfigMap",
 	)
 
 	flag.Parse()
@@ -68,22 +88,36 @@ func main() {
 		catchError(err)
 	}
 
-	for namespace, pvcCephMaps := range pvcCephMap {
-		if len(pvcCephMaps) > 0 {
-			fmt.Printf("=== %s ===\n", namespace)
-			for _, pvTuple := range pvcCephMaps {
-				fmt.Printf("%s -> %s\n", pvTuple.pvcName, pvTuple.cephSubVolume)
-			}
-			fmt.Println()
-		}
-	}
+	volumeName, subVolumeGroup, err := getK8sCephMetadata(
+		clientSet,
+		storageClassName,
+		cephCSINamespace,
+		cephCSIConfigMap,
+	)
+	catchError(err)
 
 	cephConnection, err := createCephConnection(cephKeyringUser)
 	catchError(err)
 	defer cephConnection.Shutdown()
 
-	// cephfs := cephFsAdmin.NewFromConn(cephConnection)
-	// subVolumes, err := cephfs.ListSubVolumes(volumeName, subVolumeGroup)
+	cephfs := cephFsAdmin.NewFromConn(cephConnection)
+
+	for namespace, pvcCephMaps := range pvcCephMap {
+		if len(pvcCephMaps) > 0 {
+			fmt.Printf("=== %s ===\n", namespace)
+			for _, pvTuple := range pvcCephMaps {
+				pvCephPath, err := cephfs.SubVolumePath(
+					volumeName,
+					subVolumeGroup,
+					pvTuple.cephSubVolume,
+				)
+				catchError(err)
+
+				fmt.Printf("%s -> %s\n", pvTuple.pvcName, pvCephPath)
+			}
+			fmt.Println()
+		}
+	}
 }
 
 /*
@@ -134,7 +168,12 @@ func getPVCCephMaps(clientSet *kubernetes.Clientset, namespace string, storageCl
 				return nil, err
 			}
 
-			subVolumeName := fmt.Sprintf("%s%s", volumePrefix, pv.UID)
+			csiID, err := decomposeCSIID(pv.Spec.CSI.VolumeHandle)
+			if err != nil {
+				return nil, err
+			}
+
+			subVolumeName := fmt.Sprintf("%s%s", volumePrefix, csiID.ObjectID)
 			pvTuple := PVCCephMap{
 				pvcName: pvc.Name,
 				cephSubVolume: subVolumeName,
@@ -172,3 +211,68 @@ func getDefaultKubeConfig(inCluster bool) (*rest.Config, error) {
 
 	return kubeConfig, nil
 }
+
+func getK8sCephMetadata(clientSet *kubernetes.Clientset, storageClassName string, cephCSINamespace string, cephCSIConfigMap string) (string, string, error) {
+	var cephConfigJson []CephCSIConfig
+
+	storageClass, err := clientSet.StorageV1().StorageClasses().Get(
+		context.TODO(),
+		storageClassName,
+		metaV1.GetOptions{},
+	)
+	if err != nil {
+		return "", "", err
+	}
+
+	cephVolumeName, hasCephVolumeName := storageClass.Parameters["fsName"]
+	if !hasCephVolumeName {
+		err := fmt.Sprintf(
+			"fsName is missing from StorageClass '%s'! Check your Ceph CSI Configuration",
+			storageClassName,
+		)
+		return "", "", errors.New(err)
+	}
+
+	cephConfigMap, err := clientSet.CoreV1().ConfigMaps(cephCSINamespace).Get(
+		context.TODO(),
+		cephCSIConfigMap,
+		metaV1.GetOptions{},
+	)
+	if err != nil {
+		return "", "", err
+	}
+
+	cephConfigJsonStr, hasCephConfigJson := cephConfigMap.Data["config.json"]
+	if !hasCephConfigJson {
+		err := fmt.Sprintf(
+			"ConfigMap '%s' does not contain the key 'config.json'! Check your Ceph CSI config",
+			cephCSIConfigMap,
+		)
+		return "", "", errors.New(err)
+	}
+
+	err = json.Unmarshal([]byte(cephConfigJsonStr), &cephConfigJson)
+	if err != nil {
+		return "", "", err
+	}
+
+	// TODO: Match the correct item to the ceph fsid defined in ceph.conf
+	subVolumeGroup := cephConfigJson[0].CephFS.SubvolumeGroup
+
+	// Ceph CSI default
+	if subVolumeGroup == "" {
+		subVolumeGroup = "csi"
+	}
+
+	return cephVolumeName, subVolumeGroup, nil
+}
+
+type CephCSIConfig struct {
+	ClusterID string 		`json:"clusterID"`
+	RadosNamespace string 	`json:"radosNamespace"`
+	Monitors []string 		`json:"monitors"`
+	CephFS struct {
+		SubvolumeGroup string `json:"subvolumeGroup"`
+	} `json:"cephFS"`
+}
+
