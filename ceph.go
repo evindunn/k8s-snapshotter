@@ -12,8 +12,8 @@ import (
 	"time"
 )
 
-// CephFile - Struct representing a CephFS file that will eventually be tar'd
-type CephFile struct {
+// CephDirEnt - Struct representing a CephFS file/directory/symlink that will eventually be tar'd
+type CephDirEnt struct {
 	uid int
 	gid int
 	mode int64
@@ -21,6 +21,8 @@ type CephFile struct {
 	modified time.Time
 	size int64
 	path string
+	isDir bool
+	linkTarget string
 }
 
 // createCephConnection: Returns a new connection to a ceph cluster configured in /etc/ceph/ceph.conf.
@@ -47,7 +49,7 @@ func createCephConnection(clusterUser string) (*rados.Conn, error) {
 // tarCephDirectory: Tars the the given directory on the given ceph mount and saves the
 // file at tarFilePath
 func tarCephDirectory(tarFilePath string, directory string, mount *cephfs.MountInfo) error {
-	var dirFiles []CephFile
+	var dirEntries []CephDirEnt
 
 	tarFile, err := os.Create(tarFilePath)
 	if err != nil {
@@ -68,30 +70,41 @@ func tarCephDirectory(tarFilePath string, directory string, mount *cephfs.MountI
 		return err
 	}
 
-	err = walkCephDirectory(&dirFiles, mount, ".")
+	err = walkCephDirectory(&dirEntries, mount, ".")
 	if err != nil {
 		return err
 	}
 
-	for _, cephFile := range dirFiles {
-		fileHeader := &tar.Header{
-			Name: cephFile.path,
-			Uid: cephFile.uid,
-			Gid: cephFile.gid,
-			Mode: cephFile.mode,
-			AccessTime: cephFile.accessed,
-			ModTime: cephFile.modified,
-			Size: cephFile.size,
+	for _, cephDirEnt := range dirEntries {
+		entryHeader := &tar.Header{
+			Name:       cephDirEnt.path,
+			Uid:        cephDirEnt.uid,
+			Gid:        cephDirEnt.gid,
+			Mode:       cephDirEnt.mode,
+			AccessTime: cephDirEnt.accessed,
+			ModTime:    cephDirEnt.modified,
+			Size:       cephDirEnt.size,
 		}
 
-		err = tarWriter.WriteHeader(fileHeader)
+		if cephDirEnt.isDir {
+			entryHeader.Typeflag = byte(tar.TypeDir)
+		} else if cephDirEnt.linkTarget != "" {
+			entryHeader.Typeflag = byte(tar.TypeLink)
+			entryHeader.Linkname = cephDirEnt.linkTarget
+		} else {
+			entryHeader.Typeflag = byte(tar.TypeReg)
+		}
+
+		err = tarWriter.WriteHeader(entryHeader)
 		if err != nil {
 			return err
 		}
 
-		err = readCephFile(tarBuffer, mount, cephFile.path)
-		if err != nil {
-			return err
+		if entryHeader.Typeflag == tar.TypeReg {
+			err = readCephFile(tarBuffer, mount, cephDirEnt.path)
+			if err != nil {
+				return err
+			}
 		}
 
 		err = tarBuffer.Flush()
@@ -105,7 +118,7 @@ func tarCephDirectory(tarFilePath string, directory string, mount *cephfs.MountI
 
 // walkCephDirectory: Walks the given dirName on the given mount and recursively populates entries
 // with the list of CephFiles found
-func walkCephDirectory(entries *[]CephFile, mount *cephfs.MountInfo, dirName string) error {
+func walkCephDirectory(entries *[]CephDirEnt, mount *cephfs.MountInfo, dirName string) error {
 	directory, err := mount.OpenDir(dirName)
 	if err != nil {
 		return err
@@ -124,39 +137,40 @@ func walkCephDirectory(entries *[]CephFile, mount *cephfs.MountInfo, dirName str
 		entryName := entry.Name()
 		if entryName != "." && entryName != ".." {
 			entryPath := path.Join(dirName, entryName)
+			entryStats, err := mount.Statx(entryPath, cephfs.StatxBasicStats, 0)
+			if err != nil {
+				return err
+			}
 
+			cephDirEnt := CephDirEnt{
+				uid:        int(entryStats.Uid),
+				gid:        int(entryStats.Gid),
+				mode:       int64(entryStats.Mode),
+				accessed:   time.Unix(entryStats.Atime.Sec, entryStats.Atime.Nsec),
+				modified:   time.Unix(entryStats.Mtime.Sec, entryStats.Mtime.Nsec),
+				size:       int64(entryStats.Size),
+				path:       entryPath,
+				isDir:      entry.DType() == cephfs.DTypeDir,
+				linkTarget: "",
+			}
+
+			if entry.DType() == cephfs.DTypeLnk {
+				target, err := mount.Readlink(entryPath)
+				if err != nil {
+					return err
+				}
+				cephDirEnt.linkTarget = target
+			}
+
+			// Append to list
+			*entries = append(*entries, cephDirEnt)
+
+			// Recurse if directory
 			if entry.DType() == cephfs.DTypeDir {
 				err = walkCephDirectory(entries, mount, entryPath)
 				if err != nil {
 					return err
 				}
-			} else {
-				// Third arg isn't used, it's only when a new file is created
-				file, err := mount.Open(entryPath, os.O_RDONLY, 0644)
-				if err != nil {
-					return err
-				}
-
-				stats, err := file.Fstatx(cephfs.StatxBasicStats, 0)
-				if err != nil {
-					return err
-				}
-
-				err = file.Close()
-				if err != nil {
-					return err
-				}
-
-				cephFile := CephFile{
-					uid:  int(stats.Uid),
-					gid:  int(stats.Gid),
-					mode: int64(stats.Mode),
-					accessed: time.Unix(stats.Atime.Sec, stats.Atime.Nsec),
-					modified: time.Unix(stats.Mtime.Sec, stats.Mtime.Nsec),
-					size: int64(stats.Size),
-					path: entryPath,
-				}
-				*entries = append(*entries, cephFile)
 			}
 		}
 	}

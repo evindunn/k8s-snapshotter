@@ -67,6 +67,7 @@ func main() {
 		for _, snap := range snapshots {
 			// For testing, remove all old snapshots
 			if snap != snapshotNamePrefix {
+				log.Printf("Removing old snapshot '%s/%s'...", subVolName, snap)
 				err := client.RemoveSubVolumeSnapshot(volumeName, subVolumeGroup, subVolName, snap)
 				catchError(err)
 			}
