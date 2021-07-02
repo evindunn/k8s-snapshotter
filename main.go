@@ -4,8 +4,10 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	csiV1 "github.com/kubernetes-csi/external-snapshotter/client/v4/clientset/versioned"
 	metaV1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"log"
 	"os"
 )
 
@@ -15,9 +17,6 @@ import (
 func main() {
 	var storageClassName string
 	var isInCluster bool
-
-	// today := time.Now().Format("2006-01-02")
-	// snapshotNamePrefix := fmt.Sprintf("%s_backup", today)
 
 	flag.StringVar(
 		&storageClassName,
@@ -54,16 +53,26 @@ func main() {
 		pvcs, err := getNamespacedPVCs(clientSet, namespace.Name, storageClassName)
 		catchError(err)
 
-		namespacePVCMap[namespace.Name] = pvcs
+		// If the namespace doesn't have any, don't include it in the map
+		if len(pvcs) > 0 {
+			namespacePVCMap[namespace.Name] = pvcs
+		}
 	}
 
+	csiClient, err := csiV1.NewForConfig(kubeConfig)
+	catchError(err)
+
 	for namespace, pvcs := range namespacePVCMap {
-		if len(pvcs) > 0 {
-			fmt.Printf("===== %s =====\n", namespace)
-			for _, pvc := range pvcs {
-				fmt.Printf("- %s\n", pvc)
+		fmt.Printf("===== %s =====\n", namespace)
+		for _, pvc := range pvcs {
+			snapshot, err := createVolumeSnapshot(csiClient, namespace, pvc)
+
+			if err != nil {
+				catchError(err)
 			}
-			fmt.Println()
+
+			log.Println(snapshot.Name)
 		}
+		fmt.Println()
 	}
 }
