@@ -1,0 +1,9 @@
+{{- /* gotype:github.com/evindunn/k8s-snapshotter/internal/k8s.SnapshotValues */ -}}
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: {{ .SnapshotName }}
+  namespace: {{ .Namespace }}
+spec:
+  source:
+    persistentVolumeClaimName: {{ .PVCName }}

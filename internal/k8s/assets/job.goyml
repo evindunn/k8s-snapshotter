@@ -1,0 +1,32 @@
+{{- /* gotype:github.com/evindunn/k8s-snapshotter/internal/k8s.JobTemplateValues */ -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .JobName }}
+  namespace: {{ .Namespace }}
+  labels:
+    {{- range $labelName, $labelValue := .JobLabels }}
+    {{ $labelName }}: {{ $labelValue }}
+    {{- end }}
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: backup
+        image: busybox
+        command:
+        - /bin/sh
+        args:
+        - -c
+        - "cd /mnt/in && tar czvpf /{{ .PVCName }}.tar.gz ."
+        volumeMounts:
+        - name: mnt
+          mountPath: /mnt/in
+          readOnly: true
+
+      volumes:
+      - name: mnt
+        persistentVolumeClaim:
+          claimName: {{ .PVCName }}

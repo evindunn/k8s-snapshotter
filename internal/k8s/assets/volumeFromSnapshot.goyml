@@ -1,0 +1,20 @@
+{{- /* gotype:github.com/evindunn/k8s-snapshotter/internal/k8s.PVCFromSnapshotValues */ -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: "snap-{{ .SnapshotName }}"
+  namespace: {{ .Namespace }}
+  labels:
+    {{- range $labelName, $labelValue := .PVCLabels }}
+    {{ $labelName }}: {{ $labelValue }}
+    {{- end }}
+spec:
+  dataSource:
+    name: {{ .SnapshotName }}
+    kind: VolumeSnapshot
+    apiGroup: snapshot.storage.k8s.io
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .PVCSize }}
