@@ -81,6 +81,9 @@ func GetNamespacedVolumeSnapshotsOlderThan(clientSet *csiV1.Clientset, namespace
 	return snapshots, nil
 }
 
+/*
+WaitUntilSnapshotReady waits until the given VolumeSnapshot name in the given namespace is "ReadyToUse"
+ */
 func WaitUntilSnapshotReady(csiClient *csiV1.Clientset, namespace string, snapshotName string) (*snapshotV1.VolumeSnapshot, error) {
 	var snapshot *snapshotV1.VolumeSnapshot
 	var err error

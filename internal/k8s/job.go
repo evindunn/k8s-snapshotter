@@ -46,6 +46,10 @@ func CreateBackupJob(clientSet *kubernetes.Clientset, jobName string, namespace 
 	return nil
 }
 
+/*
+WaitForJobReady waits until the given Job name in the given namespace has one pod with either the
+"Completed" or "Failed" status
+ */
 func WaitForJobReady(clientSet *kubernetes.Clientset, namespace string, jobName string) (*batchV1.Job, error) {
 	var job *batchV1.Job
 	var err error

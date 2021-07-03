@@ -10,10 +10,11 @@ import (
 )
 
 /*
-GetNamespacedPVCs returns a list of bound PersistentVolumeClaims for the given namespace and storage class
+GetNamespacedPVCs returns a list of names of bound PersistentVolumeClaims for the given namespace and
+storage class
 */
-func GetNamespacedPVCs(clientSet *kubernetes.Clientset, namespace string, storageClassName string) ([]coreV1.PersistentVolumeClaim, error) {
-	var cephPVCs []coreV1.PersistentVolumeClaim
+func GetNamespacedPVCs(clientSet *kubernetes.Clientset, namespace string, storageClassName string) ([]string, error) {
+	var namespacedPVCs []string
 
 	allNamespacePVCs, err := clientSet.CoreV1().PersistentVolumeClaims(namespace).List(
 		context.TODO(),
@@ -31,11 +32,11 @@ func GetNamespacedPVCs(clientSet *kubernetes.Clientset, namespace string, storag
 		isCorrectStorageClass := *pvc.Spec.StorageClassName == storageClassName
 
 		if isBound && isCorrectStorageClass {
-			cephPVCs = append(cephPVCs, pvc)
+			namespacedPVCs = append(namespacedPVCs, pvc.Name)
 		}
 	}
 
-	return cephPVCs, nil
+	return namespacedPVCs, nil
 }
 
 /*
@@ -80,6 +81,9 @@ func CreatePVCFromSnapshot(clientSet *kubernetes.Clientset, snapshotName string,
 	return pvc.Name, nil
 }
 
+/*
+WaitForPVCReady waits until the given PersistentVolumeClaim name in the given namespace is "Bound"
+ */
 func WaitForPVCReady(clientSet *kubernetes.Clientset, namespace string, pvcName string) (*coreV1.PersistentVolumeClaim, error) {
 	var pvc *coreV1.PersistentVolumeClaim
 	var err error
