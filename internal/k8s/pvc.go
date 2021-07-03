@@ -6,6 +6,7 @@ import (
 	coreV1 "k8s.io/api/core/v1"
 	metaV1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"time"
 )
 
 /*
@@ -77,4 +78,28 @@ func CreatePVCFromSnapshot(clientSet *kubernetes.Clientset, snapshotName string,
 	}
 
 	return pvc.Name, nil
+}
+
+func WaitForPVCReady(clientSet *kubernetes.Clientset, namespace string, pvcName string) (*coreV1.PersistentVolumeClaim, error) {
+	var pvc *coreV1.PersistentVolumeClaim
+	var err error
+
+	for {
+		pvc, err = clientSet.CoreV1().PersistentVolumeClaims(namespace).Get(
+			context.TODO(),
+			pvcName,
+			metaV1.GetOptions{},
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		if pvc.Status.Phase == "Bound" {
+			break
+		}
+
+		time.Sleep(time.Second)
+	}
+
+	return pvc, nil
 }

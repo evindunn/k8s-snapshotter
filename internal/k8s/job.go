@@ -5,6 +5,7 @@ import (
 	batchV1 "k8s.io/api/batch/v1"
 	metaV1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+	"time"
 )
 
 
@@ -43,4 +44,29 @@ func CreateBackupJob(clientSet *kubernetes.Clientset, jobName string, namespace 
 	}
 
 	return nil
+}
+
+func WaitForJobReady(clientSet *kubernetes.Clientset, namespace string, jobName string) (*batchV1.Job, error) {
+	var job *batchV1.Job
+	var err error
+
+	for {
+		job, err = clientSet.BatchV1().Jobs(namespace).Get(
+			context.TODO(),
+			jobName,
+			metaV1.GetOptions{},
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		// TODO: What if it creates more than one pod?
+		if job.Status.Succeeded == 1 || job.Status.Failed == 1 {
+			break
+		}
+
+		time.Sleep(time.Second)
+	}
+
+	return job, nil
 }
