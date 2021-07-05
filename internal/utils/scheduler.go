@@ -13,7 +13,7 @@ type BackupJobInput struct {
 	PVCName		string
 }
 
-type BackupJobRunner func(wg *sync.WaitGroup, output chan error, input *BackupJobInput)
+type BackupJobRunner func(wg *sync.WaitGroup, output chan <- error, input *BackupJobInput)
 
 type BackupJobScheduler struct {
 	jobFunc       BackupJobRunner

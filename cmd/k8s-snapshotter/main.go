@@ -100,7 +100,7 @@ func backupNamespace(jobScheduler *utils.BackupJobScheduler, clientSet *kubernet
 /*
 backupNamespacedPVC backs up the given PersistentVolumeClaim in the given namespace
 */
-func backupNamespacedPVC(wg *sync.WaitGroup, errorChan chan error, jobInput *utils.BackupJobInput) {
+func backupNamespacedPVC(wg *sync.WaitGroup, errorChan chan <- error, jobInput *utils.BackupJobInput) {
 	defer wg.Done()
 
 	log.Printf("[%s] Snapshotting volume '%s'\n", jobInput.Namespace, jobInput.PVCName)
