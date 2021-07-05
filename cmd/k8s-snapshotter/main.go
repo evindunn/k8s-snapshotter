@@ -208,6 +208,15 @@ func backupNamespacedPVC(wg *sync.WaitGroup, errorChan chan <- error, jobInput *
 			return
 		}
 
+		log.Printf("[%s] Deleting pods for backup job '%s'\n", jobInput.Namespace, jobName)
+		err = jobInput.ClientSet.CoreV1().Pods(jobInput.Namespace).DeleteCollection(
+			context.TODO(),
+			metaV1.DeleteOptions{},
+			metaV1.ListOptions{
+				LabelSelector: fmt.Sprintf("%s=%s", "job-name", jobName),
+			},
+		)
+
 		log.Printf("[%s] Deleting volume '%s'\n", jobInput.Namespace, snapshotPVCName)
 		err = jobInput.ClientSet.CoreV1().PersistentVolumeClaims(jobInput.Namespace).Delete(
 			context.TODO(),
