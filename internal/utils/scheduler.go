@@ -22,13 +22,15 @@ type BackupJobScheduler struct {
 	outputChannel chan error
 }
 
-func NewBackupJobScheduler(job BackupJobRunner) BackupJobScheduler  {
-	return BackupJobScheduler{
+func NewBackupJobScheduler(job BackupJobRunner) *BackupJobScheduler  {
+	scheduler := BackupJobScheduler{
 		jobFunc:       job,
 		waitGroup:     sync.WaitGroup{},
 		inputChannel:  make(chan *BackupJobInput),
 		outputChannel: make(chan error),
 	}
+	go scheduler.Run()
+	return &scheduler
 }
 
 func (scheduler *BackupJobScheduler) Schedule(input *BackupJobInput)  {

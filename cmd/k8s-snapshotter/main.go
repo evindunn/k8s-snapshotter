@@ -53,7 +53,7 @@ func main() {
 	backupScheduler := utils.NewBackupJobScheduler(backupNamespacedPVC)
 
 	for _, namespace := range namespaces.Items {
-		err = backupNamespace(&backupScheduler, clientSet, csiClient, namespace.Name, storageClassName)
+		err = backupNamespace(backupScheduler, clientSet, csiClient, namespace.Name, storageClassName)
 		utils.CatchError(err)
 	}
 
@@ -65,7 +65,7 @@ func main() {
 
 	if success {
 		log.Println("Backup completed successfully")
-		log.Println()
+		fmt.Println()
 	} else {
 		log.Fatalln("Back failed with one or more errors")
 	}
