@@ -7,17 +7,16 @@ import (
 	"github.com/evindunn/k8s-snapshotter/internal/k8s"
 	"github.com/evindunn/k8s-snapshotter/internal/utils"
 	csiV1 "github.com/kubernetes-csi/external-snapshotter/client/v4/clientset/versioned"
-	"golang.org/x/sync/errgroup"
 	metaV1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"log"
 	"os"
+	"sync"
 )
 
 func main() {
 	var storageClassName string
 	var isInCluster bool
-	var errorGroup errgroup.Group
 
 	flag.StringVar(
 		&storageClassName,
@@ -51,23 +50,31 @@ func main() {
 	namespaces, err := clientSet.CoreV1().Namespaces().List(context.TODO(), metaV1.ListOptions{})
 	utils.CatchError(err)
 
+	backupScheduler := utils.NewBackupJobScheduler(backupNamespacedPVC)
+
 	for _, namespace := range namespaces.Items {
-		err = backupNamespace(&errorGroup, clientSet, csiClient, namespace.Name, storageClassName)
+		err = backupNamespace(&backupScheduler, clientSet, csiClient, namespace.Name, storageClassName)
 		utils.CatchError(err)
 	}
 
-	if err = errorGroup.Wait(); err != nil {
-		log.Fatalln(err)
-	} else {
-		log.Println("Backup complete")
+	success := true
+	for err := range backupScheduler.Wait() {
+		log.Printf("ERROR: %s\n", err)
+		success = false
+	}
+
+	if success {
+		log.Println("Backup completed successfully")
 		log.Println()
+	} else {
+		log.Fatalln("Back failed with one or more errors")
 	}
 }
 
 /*
 backupNamespace backs up all PersistentVolumes in the given namespace with the given StorageClass name
 */
-func backupNamespace(errorGroup *errgroup.Group, clientSet *kubernetes.Clientset, csiClient *csiV1.Clientset, namespace string, storageClassName string) error {
+func backupNamespace(jobScheduler *utils.BackupJobScheduler, clientSet *kubernetes.Clientset, csiClient *csiV1.Clientset, namespace string, storageClassName string) error {
 	pvcNames, err := k8s.GetNamespacedPVCs(clientSet, namespace, storageClassName)
 	if err != nil {
 		return err
@@ -77,12 +84,14 @@ func backupNamespace(errorGroup *errgroup.Group, clientSet *kubernetes.Clientset
 		log.Printf("[%s] Starting namespace backup\n", namespace)
 	}
 
-	for idx, _ := range pvcNames {
-		pvcName := pvcNames[idx]
-		// TODO: This dies on the first error; Instead we want to log the error & continue the other routines
-		errorGroup.Go(func() error {
-			return backupNamespacedPVC(clientSet, csiClient, namespace, pvcName)
-		})
+	for _, pvcName := range pvcNames {
+		jobInput := utils.BackupJobInput{
+			ClientSet: clientSet,
+			CSIClient: csiClient,
+			Namespace: namespace,
+			PVCName:   pvcName,
+		}
+		jobScheduler.Schedule(&jobInput)
 	}
 
 	return nil
@@ -91,121 +100,130 @@ func backupNamespace(errorGroup *errgroup.Group, clientSet *kubernetes.Clientset
 /*
 backupNamespacedPVC backs up the given PersistentVolumeClaim in the given namespace
 */
-func backupNamespacedPVC(clientSet *kubernetes.Clientset, csiClient *csiV1.Clientset, namespace string, pvcName string) error {
-	log.Printf("[%s] Snapshotting volume '%s'\n", namespace, pvcName)
+func backupNamespacedPVC(wg *sync.WaitGroup, errorChan chan error, jobInput *utils.BackupJobInput) {
+	defer wg.Done()
+
+	log.Printf("[%s] Snapshotting volume '%s'\n", jobInput.Namespace, jobInput.PVCName)
 
 	// Create the snapshot
-	snapshotName, err := k8s.CreateVolumeSnapshot(csiClient, namespace, pvcName)
+	snapshotName, err := k8s.CreateVolumeSnapshot(jobInput.CSIClient, jobInput.Namespace, jobInput.PVCName)
 	if err != nil {
-		return err
+		errorChan <- err
+		return
 	}
 
 	log.Printf(
 		"[%s] Waiting for snapshot '%s' to be ready...\n",
-		namespace,
+		jobInput.Namespace,
 		snapshotName,
 	)
-	snapshot, err := k8s.WaitUntilSnapshotReady(csiClient, namespace, snapshotName)
+	snapshot, err := k8s.WaitUntilSnapshotReady(jobInput.CSIClient, jobInput.Namespace, snapshotName)
 	if err != nil {
-		return err
+		errorChan <- err
+		return
 	}
 
 	// Create a new PVC from the snapshot
 	snapshotPVCName, err := k8s.CreatePVCFromSnapshot(
-		clientSet,
+		jobInput.ClientSet,
 		snapshotName,
-		namespace,
+		jobInput.Namespace,
 		snapshot.Status.RestoreSize.String(),
 	)
 	if err != nil {
-		return err
+		errorChan <- err
+		return
 	}
 
 	log.Printf(
 		"[%s] Volume '%s' created from snapshot '%s'\n",
-		namespace,
+		jobInput.Namespace,
 		snapshotPVCName,
 		snapshot.Name,
 	)
 
 	log.Printf(
 		"[%s] Waiting for volume '%s' to be ready...\n",
-		namespace,
+		jobInput.Namespace,
 		snapshotPVCName,
 	)
-	_, err = k8s.WaitForPVCReady(clientSet, namespace, snapshotPVCName)
+	_, err = k8s.WaitForPVCReady(jobInput.ClientSet, jobInput.Namespace, snapshotPVCName)
 	if err != nil {
-		return err
+		errorChan <- err
+		return
 	}
 
 	// Delete the snapshot, we've now copied its data to a PVC
-	log.Printf("[%s] Deleting snapshot '%s'\n", namespace, snapshotName)
-	err = csiClient.SnapshotV1().VolumeSnapshots(namespace).Delete(
+	log.Printf("[%s] Deleting snapshot '%s'\n", jobInput.Namespace, snapshotName)
+	err = jobInput.CSIClient.SnapshotV1().VolumeSnapshots(jobInput.Namespace).Delete(
 		context.TODO(),
 		snapshotName,
 		metaV1.DeleteOptions{},
 	)
 	if err != nil {
-		return err
+		errorChan <- err
+		return
 	}
 
 	// Create a backup job for the created PVC
-	log.Printf("[%s] Creating a backup job for volume '%s'\n", namespace, snapshotPVCName)
+	log.Printf("[%s] Creating a backup job for volume '%s'\n", jobInput.Namespace, snapshotPVCName)
 	jobName := fmt.Sprintf("backup-%s", snapshotPVCName)
 	err = k8s.CreateBackupJob(
-		clientSet,
+		jobInput.ClientSet,
 		jobName,
-		namespace,
+		jobInput.Namespace,
 		snapshotPVCName,
 	)
 	if err != nil {
-		return err
+		errorChan <- err
+		return
 	}
 
 	log.Printf(
 		"[%s] Waiting for backup job '%s' to complete...\n",
-		namespace,
+		jobInput.Namespace,
 		jobName,
 	)
-	job, err := k8s.WaitForJobReady(clientSet, namespace, jobName)
+	job, err := k8s.WaitForJobReady(jobInput.ClientSet, jobInput.Namespace, jobName)
 	if err != nil {
-		return err
+		errorChan <- err
+		return
 	}
 
 	if job.Status.Failed == 0 {
 		log.Printf(
 			"[%s] Backup job '%s' to completed successfully\n",
-			namespace,
+			jobInput.Namespace,
 			jobName,
 		)
 
-		log.Printf("[%s] Deleting backup job '%s'\n", namespace, jobName)
-		err = clientSet.BatchV1().Jobs(namespace).Delete(
+		log.Printf("[%s] Deleting backup job '%s'\n", jobInput.Namespace, jobName)
+		err = jobInput.ClientSet.BatchV1().Jobs(jobInput.Namespace).Delete(
 			context.TODO(),
 			jobName,
 			metaV1.DeleteOptions{},
 		)
 		if err != nil {
-			return err
+			errorChan <- err
+			return
 		}
 
-		log.Printf("[%s] Deleting volume '%s'\n", namespace, snapshotPVCName)
-		err = clientSet.CoreV1().PersistentVolumeClaims(namespace).Delete(
+		log.Printf("[%s] Deleting volume '%s'\n", jobInput.Namespace, snapshotPVCName)
+		err = jobInput.ClientSet.CoreV1().PersistentVolumeClaims(jobInput.Namespace).Delete(
 			context.TODO(),
 			snapshotPVCName,
 			metaV1.DeleteOptions{},
 		)
 		if err != nil {
-			return err
+			errorChan <- err
+			return
 		}
 
 	} else {
 		log.Printf(
 			"[%s] One or more pods for backup job '%s' failed\n",
-			namespace,
+			jobInput.Namespace,
 			jobName,
 		)
 	}
-
-	return nil
 }
