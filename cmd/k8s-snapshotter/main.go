@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"github.com/evindunn/k8s-snapshotter/internal/k8s"
@@ -67,7 +68,7 @@ func main() {
 		log.Println("Backup completed successfully")
 		fmt.Println()
 	} else {
-		log.Fatalln("Back failed with one or more errors")
+		log.Fatalln("Backup failed with one or more errors")
 	}
 }
 
@@ -213,7 +214,7 @@ func backupNamespacedPVC(wg *sync.WaitGroup, errorChan chan <- error, jobInput *
 			context.TODO(),
 			metaV1.DeleteOptions{},
 			metaV1.ListOptions{
-				LabelSelector: fmt.Sprintf("%s=%s", "job-name", jobName),
+				LabelSelector: fmt.Sprintf("job-name=%s", jobName),
 			},
 		)
 
@@ -229,10 +230,11 @@ func backupNamespacedPVC(wg *sync.WaitGroup, errorChan chan <- error, jobInput *
 		}
 
 	} else {
-		log.Printf(
-			"[%s] One or more pods for backup job '%s' failed\n",
+		errMsg := fmt.Sprintf(
+			"One or more pods for backup job '%s/%s' failed\n",
 			jobInput.Namespace,
 			jobName,
 		)
+		errorChan <- errors.New(errMsg)
 	}
 }
