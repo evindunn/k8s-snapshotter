@@ -7,13 +7,16 @@ import (
 )
 
 /*
-BackupJobInput is the input required to run an asynchronous backup of a given PVCName in a given
-Namespace
+BackupJobInput is a namespace/PersistentVolumeClaim name pair that will be backed up
  */
 type BackupJobInput struct {
-	ClientSet   *kubernetes.Clientset
-	CSIClient   *csiV1.Clientset
-	Namespace   string
+	ClientSet 	*kubernetes.Clientset
+	CSIClient	*csiV1.Clientset
+	S3Url		string
+	S3Bucket	string
+	S3AccessKey	string
+	S3SecretKey	string
+	Namespace 	string
 	PVCName		string
 }
 
@@ -21,29 +24,56 @@ type BackupJobInput struct {
 BackupJobRunner is the function that is called on each BackupJobInput in order to perform the
 backup
  */
-type BackupJobRunner func(wg *sync.WaitGroup, output chan <- error, input *BackupJobInput)
+type BackupJobRunner func(
+	wg *sync.WaitGroup,
+	output chan <- error,
+	input *BackupJobInput,
+)
 
 /*
 BackupJobScheduler is responsible for running BackupJobRunner on multiple BackupJobInput instances in
 parallel
  */
 type BackupJobScheduler struct {
-	jobFunc       BackupJobRunner
-	waitGroup     sync.WaitGroup
-	inputChannel  chan *BackupJobInput
-	outputChannel chan error
+	jobFunc       		BackupJobRunner
+	waitGroup     		sync.WaitGroup
+	inputChannel  		chan *BackupJobInput
+	outputChannel 		chan error
+	storageClassName	string
+	s3Url				string
+	s3Bucket			string
+	s3AccessKey			string
+	s3SecretKey			string
+	clientSet   		*kubernetes.Clientset
+	csiClient   		*csiV1.Clientset
 }
 
 /*
 NewBackupJobScheduler creates a new BackupJobScheduler that will call the given BackupJobRunner on multiple
 BackupJobInput instances in parallel
  */
-func NewBackupJobScheduler(job BackupJobRunner) *BackupJobScheduler  {
+func NewBackupJobScheduler(
+	job BackupJobRunner,
+	clientSet   *kubernetes.Clientset,
+	csiClient   *csiV1.Clientset,
+	storageClassName string,
+	s3Url string,
+	s3Bucket string,
+	s3AccessKey string,
+	s3SecretKey string) *BackupJobScheduler  {
+
 	scheduler := BackupJobScheduler{
-		jobFunc:       job,
-		waitGroup:     sync.WaitGroup{},
-		inputChannel:  make(chan *BackupJobInput),
-		outputChannel: make(chan error),
+		jobFunc:       		job,
+		waitGroup:     		sync.WaitGroup{},
+		inputChannel:  		make(chan *BackupJobInput),
+		outputChannel: 		make(chan error),
+		storageClassName: 	storageClassName,
+		clientSet: 			clientSet,
+		csiClient: 			csiClient,
+		s3Url:				s3Url,
+		s3Bucket: 			s3Bucket,
+		s3AccessKey: 		s3AccessKey,
+		s3SecretKey:		s3SecretKey,
 	}
 	go scheduler.Run()
 	return &scheduler
@@ -52,8 +82,11 @@ func NewBackupJobScheduler(job BackupJobRunner) *BackupJobScheduler  {
 /*
 Schedule submits the given BackupJobInput to the scheduler's inputChannel
  */
-func (scheduler *BackupJobScheduler) Schedule(input *BackupJobInput)  {
-	scheduler.inputChannel <- input
+func (scheduler *BackupJobScheduler) Schedule(namespace string, pvcName string)  {
+	scheduler.inputChannel <- &BackupJobInput{
+		Namespace: namespace,
+		PVCName:   pvcName,
+	}
 }
 
 /*
@@ -64,7 +97,22 @@ func (scheduler *BackupJobScheduler) Run() {
 	defer close(scheduler.outputChannel)
 	for input := range scheduler.inputChannel {
 		scheduler.waitGroup.Add(1)
-		go scheduler.jobFunc(&scheduler.waitGroup, scheduler.outputChannel, input)
+
+		jobInput := BackupJobInput{
+			ClientSet: scheduler.clientSet,
+			CSIClient: scheduler.csiClient,
+			S3AccessKey: scheduler.s3AccessKey,
+			S3SecretKey: scheduler.s3SecretKey,
+			S3Url: scheduler.s3Url,
+			S3Bucket: scheduler.s3Bucket,
+			Namespace: input.Namespace,
+			PVCName:   input.PVCName,
+		}
+		go scheduler.jobFunc(
+			&scheduler.waitGroup,
+			scheduler.outputChannel,
+			&jobInput,
+		)
 	}
 	scheduler.waitGroup.Wait()
 }

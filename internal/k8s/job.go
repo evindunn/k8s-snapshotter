@@ -8,18 +8,23 @@ import (
 	"time"
 )
 
+const jobWaitTime = 2
 
-func CreateBackupJob(clientSet *kubernetes.Clientset, jobName string, namespace string, pvcName string) error {
+func CreateBackupJob(clientSet *kubernetes.Clientset, jobName string, s3Url string, s3Bucket string, s3AccessKey string, s3SecretKey string, namespace string, pvcName string) error {
 	var job batchV1.Job
 
 	jobLabels := make(map[string]string)
 	jobLabels[createdByLabelName] = createdByLabelValue
 
 	jobValues := JobTemplateValues{
-		JobName:   jobName,
-		JobLabels: jobLabels,
-		Namespace: namespace,
-		PVCName:   pvcName,
+		JobName:   		jobName,
+		JobLabels: 		jobLabels,
+		Namespace: 		namespace,
+		PVCName:   		pvcName,
+		S3Url: 			s3Url,
+		S3Bucket: 		s3Bucket,
+		S3AccessKey: 	s3AccessKey,
+		S3SecretKey: 	s3SecretKey,
 	}
 
 	err := ParseK8STemplate(
@@ -69,7 +74,7 @@ func WaitForJobReady(clientSet *kubernetes.Clientset, namespace string, jobName 
 			break
 		}
 
-		time.Sleep(time.Second)
+		time.Sleep(jobWaitTime * time.Second)
 	}
 
 	return job, nil

@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+const pvcWaitTime = 2
+
 /*
 GetNamespacedPVCs returns a list of names of bound PersistentVolumeClaims for the given namespace and
 storage class
@@ -102,7 +104,7 @@ func WaitForPVCReady(clientSet *kubernetes.Clientset, namespace string, pvcName 
 			break
 		}
 
-		time.Sleep(time.Second)
+		time.Sleep(pvcWaitTime * time.Second)
 	}
 
 	return pvc, nil

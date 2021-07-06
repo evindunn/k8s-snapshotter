@@ -15,12 +15,33 @@ spec:
       restartPolicy: Never
       containers:
       - name: backup
-        image: busybox
-        command:
-        - /bin/sh
+        image: busybox:latest
+        env:
+        - name: MINIO_HOST
+          value: {{ .S3Url }}
+
+        - name: MINIO_ACCESS_KEY
+          value: {{ .S3AccessKey }}
+
+        - name: MINIO_SECRET_KEY
+          value: {{ .S3SecretKey }}
+
+        command: [/bin/sh]
+        # TODO: Remove --insecure from mc cp
         args:
         - -c
-        - "cd /mnt/in && tar czvpf /{{ .PVCName }}.tar.gz ."
+        - |
+          echo "Downloading mc..." && \
+          wget -qO /bin/mc http://dl.min.io/client/mc/release/linux-amd64/mc && \
+          chmod +x /bin/mc && \
+          cd /mnt/in && \
+          echo "Creating backup..." && \
+          tar czpf /{{ .PVCName }}.tar.gz . && \
+          echo "Uploading backup..." && \
+          mc alias set minio $MINIO_HOST $MINIO_ACCESS_KEY $MINIO_SECRET_KEY --api S3v4 && \
+          mc --insecure cp /{{ .PVCName }}.tar.gz minio/{{ .S3Bucket }}/{{ .Namespace }}/{{ .PVCName }}.tar.gz && \
+          echo "Done."
+
         volumeMounts:
         - name: mnt
           mountPath: /mnt/in

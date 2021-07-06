@@ -36,6 +36,10 @@ type JobTemplateValues struct {
 	JobLabels		map[string]string
 	Namespace		string
 	PVCName 		string
+	S3Url			string
+	S3Bucket		string
+	S3AccessKey		string
+	S3SecretKey		string
 }
 
 type PVCFromSnapshotValues struct {

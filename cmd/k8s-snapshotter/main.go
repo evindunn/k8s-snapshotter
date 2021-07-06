@@ -17,6 +17,10 @@ import (
 
 func main() {
 	var storageClassName string
+	var s3BucketUrl string
+	var s3BucketName string
+	var s3BucketAccessKey string
+	var s3BucketSecretKey string
 	var isInCluster bool
 
 	flag.StringVar(
@@ -24,6 +28,30 @@ func main() {
 		"storageClassName",
 		"",
 		"The name of the storage class to query volumes from",
+	)
+	flag.StringVar(
+		&s3BucketUrl,
+		"s3Url",
+		"",
+		"The URL to the S3 bucket where backups will be stored",
+	)
+	flag.StringVar(
+		&s3BucketName,
+		"s3Bucket",
+		"",
+		"The name of the S3 bucket where backups will be stored",
+	)
+	flag.StringVar(
+		&s3BucketAccessKey,
+		"s3AccessKey",
+		"",
+		"The access key for the S3 bucket where backups will be stored",
+	)
+	flag.StringVar(
+		&s3BucketSecretKey,
+		"s3SecretKey",
+		"",
+		"The secret key for the S3 bucket where backups will be stored",
 	)
 	flag.BoolVar(
 		&isInCluster,
@@ -34,7 +62,13 @@ func main() {
 
 	flag.Parse()
 
-	if storageClassName == "" {
+	flagsInvalid := storageClassName == "" ||
+		s3BucketUrl == "" ||
+		s3BucketName == "" ||
+		s3BucketAccessKey == "" ||
+		s3BucketSecretKey == ""
+
+	if flagsInvalid {
 		flag.Usage()
 		os.Exit(1)
 	}
@@ -51,11 +85,32 @@ func main() {
 	namespaces, err := clientSet.CoreV1().Namespaces().List(context.TODO(), metaV1.ListOptions{})
 	utils.CatchError(err)
 
-	backupScheduler := utils.NewBackupJobScheduler(backupNamespacedPVC)
+	backupScheduler := utils.NewBackupJobScheduler(
+		backupNamespacedPVC,
+		clientSet,
+		csiClient,
+		storageClassName,
+		s3BucketUrl,
+		s3BucketName,
+		s3BucketAccessKey,
+		s3BucketSecretKey,
+	)
 
 	for _, namespace := range namespaces.Items {
-		err = backupNamespace(backupScheduler, clientSet, csiClient, namespace.Name, storageClassName)
-		utils.CatchError(err)
+		pvcNames, err := k8s.GetNamespacedPVCs(clientSet, namespace.Name, storageClassName)
+		if err != nil {
+			utils.CatchError(err)
+		}
+
+		if len(pvcNames) > 0 {
+			log.Printf("[%s] Starting namespace backup\n", namespace.Name)
+		} else {
+			log.Printf("[%s] No bound volumes found, skipping namespace\n", namespace.Name)
+		}
+
+		for _, pvcName := range pvcNames {
+			backupScheduler.Schedule(namespace.Name, pvcName)
+		}
 	}
 
 	success := true
@@ -70,32 +125,6 @@ func main() {
 	} else {
 		log.Fatalln("Backup failed with one or more errors")
 	}
-}
-
-/*
-backupNamespace backs up all PersistentVolumes in the given namespace with the given StorageClass name
-*/
-func backupNamespace(jobScheduler *utils.BackupJobScheduler, clientSet *kubernetes.Clientset, csiClient *csiV1.Clientset, namespace string, storageClassName string) error {
-	pvcNames, err := k8s.GetNamespacedPVCs(clientSet, namespace, storageClassName)
-	if err != nil {
-		return err
-	}
-
-	if len(pvcNames) > 0 {
-		log.Printf("[%s] Starting namespace backup\n", namespace)
-	}
-
-	for _, pvcName := range pvcNames {
-		jobInput := utils.BackupJobInput{
-			ClientSet: clientSet,
-			CSIClient: csiClient,
-			Namespace: namespace,
-			PVCName:   pvcName,
-		}
-		jobScheduler.Schedule(&jobInput)
-	}
-
-	return nil
 }
 
 /*
@@ -169,9 +198,15 @@ func backupNamespacedPVC(wg *sync.WaitGroup, errorChan chan <- error, jobInput *
 	// Create a backup job for the created PVC
 	log.Printf("[%s] Creating a backup job for volume '%s'\n", jobInput.Namespace, snapshotPVCName)
 	jobName := fmt.Sprintf("backup-%s", snapshotPVCName)
+
+	// TODO: This needs a shorter signature
 	err = k8s.CreateBackupJob(
 		jobInput.ClientSet,
 		jobName,
+		jobInput.S3Url,
+		jobInput.S3Bucket,
+		jobInput.S3AccessKey,
+		jobInput.S3SecretKey,
 		jobInput.Namespace,
 		snapshotPVCName,
 	)
@@ -231,7 +266,7 @@ func backupNamespacedPVC(wg *sync.WaitGroup, errorChan chan <- error, jobInput *
 
 	} else {
 		errMsg := fmt.Sprintf(
-			"One or more pods for backup job '%s/%s' failed\n",
+			"One or more pods for backup job '%s/%s' failed",
 			jobInput.Namespace,
 			jobName,
 		)
